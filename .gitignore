@@ -1,174 +1,112 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
 
-# C extensions
-*.so
+# %%
+# Import libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.preprocessing import StandardScaler
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Load data
+df = pd.read_csv("data.csv")
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# %%
+# Data cleaning
+# Remove extreme outliers (cars priced over $200k)
+df = df[df['MSRP'] < 200_000]
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Handle missing values
+df = df.dropna(subset=['Engine HP', 'MSRP', 'city mpg'])
+df['Market Category'] = df['Market Category'].fillna('Unknown')
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+# Feature engineering
+df['Age'] = 2023 - df['Year']
+df['HP_per_cylinder'] = df['Engine HP'] / df['Engine Cylinders'].replace(0, 1)  # Avoid division by zero
+df['log_MSRP'] = np.log(df['MSRP'])  # Log-transform target
 
-# Translations
-*.mo
-*.pot
+# %%
+# Select features
+features = [
+    'Engine HP', 'city mpg', 'Age', 'HP_per_cylinder',
+    'Make', 'Vehicle Size', 'Transmission Type', 'Driven_Wheels'
+]
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# %%
+# Preprocessing
+X = pd.get_dummies(df[features], drop_first=True)
+y = df['log_MSRP']  # Use log-transformed target
 
-# Flask stuff:
-instance/
-.webassets-cache
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Scrapy stuff:
-.scrapy
+# %%
+# Train XGBoost model with tuned parameters
+model = XGBRegressor(
+    n_estimators=1000,
+    learning_rate=0.05,
+    max_depth=7,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42
+)
+model.fit(X_train, y_train)
 
-# Sphinx documentation
-docs/_build/
 
-# PyBuilder
-.pybuilder/
-target/
+# %%
+# Evaluate
+y_pred_log = model.predict(X_test)
+y_pred = np.exp(y_pred_log)  # Convert back to original scale
+y_test_exp = np.exp(y_test)
 
-# Jupyter Notebook
-.ipynb_checkpoints
+print(f"MAE: ${mean_absolute_error(y_test_exp, y_pred):,.2f}")
+print(f"R²: {r2_score(y_test_exp, y_pred):.2f}")
 
-# IPython
-profile_default/
-ipython_config.py
+# %%
+# Feature importance
+importance = pd.Series(model.feature_importances_, index=X.columns)
+plt.figure(figsize=(10, 6))
+importance.nlargest(15).sort_values().plot(kind='barh')
+plt.title('Top 15 Feature Importances')
+plt.xlabel('XGBoost Importance Score')
+plt.show()
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+# %%
+# Actual vs Predicted plot
+plt.figure(figsize=(10, 6))
+plt.scatter(y_test_exp, y_pred, alpha=0.6)
+plt.plot([y_test_exp.min(), y_test_exp.max()], 
+         [y_test_exp.min(), y_test_exp.max()], 'k--', lw=2)
+plt.xlabel('Actual Price')
+plt.ylabel('Predicted Price')
+plt.title('Actual vs Predicted Car Prices')
+plt.show()
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+# %%
+# Residual analysis
+residuals = y_test_exp - y_pred
+plt.figure(figsize=(10, 6))
+sns.histplot(residuals, kde=True)
+plt.title('Residual Distribution')
+plt.xlabel('Prediction Error ($)')
+plt.show()
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
+# %%
+# After predictions, map back to original data using indices
+test_indices = X_test.index  # Get the indices of the test set
+df_test = df.loc[test_indices, ['Make', 'Model']].copy()  # Pull original 'Make' and 'Model'
+df_test['Actual'] = y_test_exp  # Actual prices
+df_test['Predicted'] = y_pred   # Model predictions
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
+# Calculate pricing gap
+df_test['Pricing Gap (%)'] = ((df_test['Actual'] - df_test['Predicted']) / df_test['Predicted']) * 100
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
-.pdm.toml
-.pdm-python
-.pdm-build/
+# Top 10 underpriced cars
+print(df_test.sort_values('Pricing Gap (%)').head(10))
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
+# %%
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
 
-# SageMath parsed files
-*.sage.py
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
-.pypirc
